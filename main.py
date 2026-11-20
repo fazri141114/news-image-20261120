@@ -1,100 +1,72 @@
 #!/usr/bin/env python3
-"""
-Entry program for the make.fun bounty "Sum up 20 November's world
-news in one image" (news-image-20261120), entered by @fazri141114.
+"""Entrypoint for the make.fun bounty "Sum up 20 November's world news
+in one image" (news-image-20261120), second submission.
 
-The front page itself - WORLD NEWS DAILY, Friday 20 November 2026,
-30 stories on one portrait page - was drawn by build_image_20.py
-and ships in this repository as entry.png. The contest sandbox
-runs this file instead: pure Python 3 standard library, no network,
-no third-party imports.
+The entry image is the finished front page shipped in this repository
+as entry.png ("THE WORLD IN ONE DAY — Friday 20 November 2026", an
+illustrated one-page summary of the day). This program verifies the
+file against the bounty's limits and copies it, byte for byte, to the
+output path the runner reads:
 
-What it does: read entry.png (the copy stored next to this file,
-falling back to the working directory), prove it is a complete PNG
-inside the contest limits - at most 1 MiB, at most 1024x1024, every
-chunk's CRC32 intact, nothing after IEND - then write the identical
-bytes to the output directory: $MAKEFUN_OUTPUT_DIR when the grader
-sets it, otherwise /output. Every run produces the same bytes.
-An optional positional argument names the output directory instead
-(it beats the environment variable); the sandbox passes neither.
+    python3 main.py [output-dir]        (default output-dir: /output)
 
-    python3 main.py [output-dir]
+Standard library only. Running it twice produces byte-identical
+output, because the copy is a pure function of the shipped file.
 """
 
-import binascii
+import hashlib
 import os
 import struct
 import sys
 
-LIMIT_BYTES = 1024 * 1024
-LIMIT_SIDE = 1024
-SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_BYTES = 1_048_576  # 1 MiB
+MAX_SIDE = 1024        # pixels, either dimension
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-def png_chunks(blob):
-    """Yield (type, payload) for each chunk of a PNG byte string."""
-    if blob[:8] != SIGNATURE:
-        raise ValueError("missing PNG signature")
-    pos = 8
-    while pos < len(blob):
-        if pos + 12 > len(blob):
-            raise ValueError("chunk runs past the end of the file")
-        (size,) = struct.unpack(">I", blob[pos:pos + 4])
-        ctype = blob[pos + 4:pos + 8]
-        payload = blob[pos + 8:pos + 8 + size]
-        (crc,) = struct.unpack(">I", blob[pos + 8 + size:pos + 12 + size])
-        if len(payload) != size:
-            raise ValueError("chunk payload is truncated")
-        if binascii.crc32(ctype + payload) & 0xFFFFFFFF != crc:
-            raise ValueError(f"CRC32 mismatch in chunk {ctype!r}")
-        yield ctype, payload
-        pos += 12 + size
-    if pos != len(blob):
-        raise ValueError("trailing bytes after the last chunk")
+def png_dimensions(data):
+    """(width, height) from the IHDR chunk of a PNG byte string."""
+    if data[:8] != PNG_SIGNATURE:
+        raise ValueError("entry.png is not a PNG file")
+    if data[12:16] != b"IHDR":
+        raise ValueError("entry.png has no IHDR chunk")
+    return struct.unpack(">II", data[16:24])
 
 
-def validate(blob):
-    """Check the contest limits; return the image's (width, height)."""
-    if len(blob) > LIMIT_BYTES:
-        raise ValueError(f"{len(blob)} bytes exceeds the 1 MiB limit")
-    size = None
-    closed = False
-    for ctype, payload in png_chunks(blob):
-        if ctype == b"IHDR":
-            size = struct.unpack(">II", payload[:8])
-        elif ctype == b"IEND":
-            closed = True
-    if size is None:
-        raise ValueError("no IHDR chunk")
-    if not closed:
-        raise ValueError("no IEND chunk")
-    if size[0] > LIMIT_SIDE or size[1] > LIMIT_SIDE:
-        raise ValueError(f"{size[0]}x{size[1]} exceeds the 1024x1024 limit")
-    return size
-
-
-def entry_bytes():
-    """Load entry.png from beside this file, else from the cwd."""
-    beside = os.path.join(os.path.dirname(os.path.abspath(__file__)), "entry.png")
-    path = beside if os.path.isfile(beside) else os.path.join(os.getcwd(), "entry.png")
+def verified_bytes(path):
+    """Read entry.png and check it against the bounty's limits."""
     with open(path, "rb") as fh:
-        return fh.read()
+        data = fh.read()
+    if len(data) > MAX_BYTES:
+        raise ValueError(f"entry.png is {len(data)} bytes, over the 1 MiB limit")
+    width, height = png_dimensions(data)
+    if width > MAX_SIDE or height > MAX_SIDE:
+        raise ValueError(f"entry.png is {width}x{height}, over the 1024x1024 limit")
+    return data
 
 
-def run(argv):
-    blob = entry_bytes()
-    width, height = validate(blob)
-    if len(argv) > 1:
-        out_dir = argv[1]
-    else:
-        out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
+def main(argv):
+    here = os.path.dirname(os.path.abspath(__file__))
+    source = os.path.join(here, "entry.png")
+    out_dir = argv[1] if len(argv) > 1 else "/output"
     os.makedirs(out_dir, exist_ok=True)
-    dest = os.path.join(out_dir, "entry.png")
-    with open(dest, "wb") as fh:
-        fh.write(blob)
-    print(f"wrote {dest} ({len(blob)} bytes, {width}x{height})")
+    target = os.path.join(out_dir, "entry.png")
+
+    data = verified_bytes(source)
+    if os.path.abspath(source) == os.path.abspath(target):
+        raise ValueError("output path would overwrite the shipped entry.png")
+    with open(target, "wb") as fh:
+        fh.write(data)
+
+    # The copy must be exact; fail loudly rather than ship a bad entry.
+    digest = hashlib.sha256(data).hexdigest()
+    with open(target, "rb") as fh:
+        if hashlib.sha256(fh.read()).hexdigest() != digest:
+            raise IOError("copied entry.png differs from the source")
+    print(f"entry.png verified and copied to {target} "
+          f"({len(data)} bytes, sha256 {digest})")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(run(sys.argv))
+    sys.exit(main(sys.argv))
